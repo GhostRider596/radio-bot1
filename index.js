@@ -1,105 +1,63 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require("discord.js");
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType, AudioPlayerStatus } = require("@discordjs/voice");
-const ffmpegPath = require("ffmpeg-static");
-process.env.FFMPEG_PATH = ffmpegPath;
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType } = require("@discordjs/voice");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
+// Enregistre la commande /play
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-const sessions = new Map();
 
 client.once("ready", async () => {
-  console.log(`✅ Connecté : ${client.user.tag}`);
-  const commands = [
-    new SlashCommandBuilder()
-      .setName("play")
-      .setDescription("Joue une web radio")
-      .addStringOption((o) => o.setName("lien").setDescription("URL du flux radio").setRequired(true)),
-    new SlashCommandBuilder()
-      .setName("stop")
-      .setDescription("Arrête la radio"),
-    new SlashCommandBuilder()
-      .setName("247")
-      .setDescription("Active/désactive le mode 24/7"),
-  ].map((c) => c.toJSON());
-  await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
-  console.log("✅ Commandes enregistrées !");
+  console.log(`✅ Bot connecté : ${client.user.tag}`);
+
+  await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), {
+    body: [
+      new SlashCommandBuilder()
+        .setName("play")
+        .setDescription("Joue une web radio")
+        .addStringOption((o) =>
+          o.setName("lien").setDescription("Lien du flux radio (ex: http://...)").setRequired(true)
+        )
+        .toJSON(),
+    ],
+  });
+
+  console.log("✅ Commande /play enregistrée");
 });
-
-function playStream(url, voiceChannel, guildId) {
-  const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
-    guildId,
-    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-  });
-  const player = createAudioPlayer();
-  connection.subscribe(player);
-
-  function startResource() {
-    const resource = createAudioResource(url, { inputType: StreamType.Arbitrary });
-    player.play(resource);
-  }
-  startResource();
-
-  player.on(AudioPlayerStatus.Idle, () => {
-    console.log("🔄 Reconnexion...");
-    setTimeout(startResource, 3000);
-  });
-  player.on("error", (err) => {
-    console.error("❌", err.message);
-    setTimeout(startResource, 3000);
-  });
-
-  const session = sessions.get(guildId) || {};
-  sessions.set(guildId, { ...session, connection, player, url, voiceChannel });
-}
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const { commandName, guildId, member } = interaction;
-  const voiceChannel = member?.voice?.channel;
-  const session = sessions.get(guildId);
+  if (!interaction.isChatInputCommand() || interaction.commandName !== "play") return;
 
-  if (commandName === "play") {
-    if (!voiceChannel) {
-      return interaction.reply({ content: "❌ Rejoins un salon vocal d'abord !", ephemeral: true });
-    }
-    const url = interaction.options.getString("lien");
-    try { await interaction.reply(`📻 En train de jouer : **${url}**`); } catch (e) {}
-    playStream(url, voiceChannel, guildId);
-    return;
+  const voiceChannel = interaction.member?.voice?.channel;
+
+  // Vérifie que l'utilisateur est dans un salon vocal
+  if (!voiceChannel) {
+    return interaction.reply({ content: "❌ Tu dois être dans un salon vocal !", ephemeral: true });
   }
 
-  if (commandName === "stop") {
-    if (!session) return interaction.reply("Aucune radio en cours.");
-    session.player.stop(true);
-    session.connection.destroy();
-    sessions.delete(guildId);
-    return interaction.reply("⏹️ Radio arrêtée.");
-  }
+  const lien = interaction.options.getString("lien");
 
-  if (commandName === "247") {
-    if (!session) return interaction.reply("❌ Lance d'abord une radio avec /play !");
-    session.stay247 = !session.stay247;
-    return interaction.reply(session.stay247 ? "✅ Mode 24/7 activé !" : "⏹️ Mode 24/7 désactivé");
-  }
-});
+  // Rejoins le salon et joue le flux
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: interaction.guildId,
+    adapterCreator: interaction.guild.voiceAdapterCreator,
+  });
 
-client.on("voiceStateUpdate", (oldState) => {
-  const guildId = oldState.guild.id;
-  const session = sessions.get(guildId);
-  if (!session || session.stay247) return;
-  const channel = oldState.guild.channels.cache.get(session.connection.joinConfig.channelId);
-  const humans = channel?.members.filter((m) => !m.user.bot).size ?? 0;
-  if (humans === 0) {
-    session.player.stop(true);
-    session.connection.destroy();
-    sessions.delete(guildId);
-    console.log("👋 Salon vide, bot déconnecté.");
-  }
+  const player = createAudioPlayer();
+  const resource = createAudioResource(lien, { inputType: StreamType.Arbitrary });
+
+  player.play(resource);
+  connection.subscribe(player);
+
+  player.on("error", (err) => {
+    interaction.followUp("❌ Erreur avec ce lien radio.");
+    console.error(err.message);
+  });
+
+  await interaction.reply(`✅ 📻 En train de jouer : ${lien}`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
