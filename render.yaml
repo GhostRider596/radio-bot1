@@ -1,0 +1,6 @@
+services:
+  - type: worker
+    name: radio-bot
+    env: node
+    buildCommand: apt-get install -y ffmpeg && npm install
+    startCommand: node index.js
